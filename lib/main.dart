@@ -30,7 +30,9 @@ class WebViewApp extends StatefulWidget {
 class _WebViewAppState extends State<WebViewApp> {
   InAppWebViewController? controller;
 
-  int _currentIndex = 0;
+  // 탭 순서: 검색(0) · 장바구니(1) · 홈(2) · 마이페이지(3) · 설정(4)
+  int _currentIndex = 2; // 기본 '홈'
+  int _lastWebIndex = 2; // 마지막으로 본 웹 탭(0~3)
   DateTime? _lastBackPressAt;
   bool _pageReady = false;
 
@@ -47,7 +49,9 @@ class _WebViewAppState extends State<WebViewApp> {
     final isMy = _isMyPage(urlStr ?? '');
     if (matched != null) {
       setState(() {
-        _currentIndex = matched;
+        // 설정 탭(4)에서 웹뷰가 로드되더라도 현재 선택은 유지
+        if (_currentIndex != 4) _currentIndex = matched;
+        _lastWebIndex = matched; // 마지막 웹 탭 기록
         _tabActive = true;
         _onMyPage = isMy;
       });
@@ -75,21 +79,41 @@ class _WebViewAppState extends State<WebViewApp> {
     try { u = Uri.parse(url); } catch (_) { return null; }
     if (u.host != 'directfarm.co.kr') return null;
     switch (u.path) {
-      case '/':                return 0;
-      case '/shop/search.php': return 1;
-      case '/shop/cart.php':   return 2;
+      case '/shop/search.php': return 0;
+      case '/shop/cart.php':   return 1;
+      case '/':                return 2;
       case '/shop/mypage.php': return 3;
       default:                 return null;
     }
   }
 
   Future<void> _goTab(int index) async {
-    setState(() { _currentIndex = index; _tabActive = true; });
-    final targets = [_home, _search, _cart, _mypage];
+    // 설정 탭은 같은 화면 내 전환만
+    if (index == 4) {
+      setState(() {
+        _currentIndex = 4;
+        _tabActive = true;
+      });
+      return;
+    }
+
+    // 웹 탭 이동(0~3)
+    setState(() {
+      _currentIndex = index;
+      _lastWebIndex = index;
+      _tabActive = true;
+    });
+    final targets = [_search, _cart, _home, _mypage];
     await controller?.loadUrl(urlRequest: URLRequest(url: WebUri(targets[index])));
   }
 
   Future<bool> _onWillPop() async {
+    // 설정 탭에서 뒤로가기 → 마지막 웹 탭으로 복귀
+    if (_currentIndex == 4) {
+      setState(() => _currentIndex = _lastWebIndex);
+      return false;
+    }
+
     final isMenuOpen = await controller?.evaluateJavascript(
       source: r'(function(){try{return window._isMenuOpen?window._isMenuOpen():false;}catch(e){return false;}})()',
     );
@@ -135,97 +159,88 @@ class _WebViewAppState extends State<WebViewApp> {
       child: Scaffold(
         body: SafeArea(
           bottom: false,
-          child: InAppWebView(
-            initialUrlRequest: URLRequest(url: WebUri(_home)),
-            initialSettings: InAppWebViewSettings(
-              javaScriptEnabled: true,
-              transparentBackground: true,
-              mediaPlaybackRequiresUserGesture: false,
-              allowsInlineMediaPlayback: true,
-            ),
-            onWebViewCreated: (ctrl) async { controller = ctrl; },
-            onLoadStart: (ctrl, url) => _syncNavByUrl(url?.toString()),
-            onUpdateVisitedHistory: (ctrl, url, _) => _syncNavByUrl(url?.toString()),
-            onLoadStop: (ctrl, url) async {
-              await ctrl.evaluateJavascript(source: '''
-                (function(){ var el=document.getElementById('ft'); if(el){el.style.display='none';} })();
-              ''');
-              await ctrl.evaluateJavascript(source: r'''
-                (function(){
-                  try{
-                    window._isMenuOpen = function(){
-                      try{ var cat=document.getElementById('category'); if(!cat) return false; return getComputedStyle(cat).display!=='none'; }catch(e){ return false; }
-                    };
-                    window._closeMenu = function(){
+          child: IndexedStack(
+            index: _currentIndex == 4 ? 1 : 0, // 0=웹뷰, 1=설정
+            children: [
+              InAppWebView(
+                initialUrlRequest: URLRequest(url: WebUri(_home)),
+                initialSettings: InAppWebViewSettings(
+                  javaScriptEnabled: true,
+                  transparentBackground: true,
+                  mediaPlaybackRequiresUserGesture: false,
+                  allowsInlineMediaPlayback: true,
+                ),
+                onWebViewCreated: (ctrl) async { controller = ctrl; },
+                onLoadStart: (ctrl, url) => _syncNavByUrl(url?.toString()),
+                onUpdateVisitedHistory: (ctrl, url, _) => _syncNavByUrl(url?.toString()),
+                onLoadStop: (ctrl, url) async {
+                  await ctrl.evaluateJavascript(source: '''
+                    (function(){ var el=document.getElementById('ft'); if(el){el.style.display='none';} })();
+                  ''');
+                  await ctrl.evaluateJavascript(source: r'''
+                    (function(){
                       try{
-                        if (window.jQuery && window.jQuery('#category .close_btn').length) {
-                          window.jQuery('#category .close_btn').trigger('click'); return true;
-                        }
-                        document.documentElement.classList.remove('no-scroll');
-                        document.body.classList.remove('no-scroll');
-                        var cat=document.getElementById('category'); if(cat) cat.style.display='none';
-                        var bg=document.getElementById('category_all_bg'); if(bg) bg.style.display='none';
-                        return true;
-                      }catch(e){ return false; }
-                    };
-                  }catch(e){}
-                })();
-              ''');
-              _syncNavByUrl(url?.toString());
-              _pageReady = true;
-            },
+                        window._isMenuOpen = function(){
+                          try{ var cat=document.getElementById('category'); if(!cat) return false; return getComputedStyle(cat).display!=='none'; }catch(e){ return false; }
+                        };
+                        window._closeMenu = function(){
+                          try{
+                            if (window.jQuery && window.jQuery('#category .close_btn').length) {
+                              window.jQuery('#category .close_btn').trigger('click'); return true;
+                            }
+                            document.documentElement.classList.remove('no-scroll');
+                            document.body.classList.remove('no-scroll');
+                            var cat=document.getElementById('category'); if(cat) cat.style.display='none';
+                            var bg=document.getElementById('category_all_bg'); if(bg) bg.style.display='none';
+                            return true;
+                          }catch(e){ return false; }
+                        };
+                      }catch(e){}
+                    })();
+                  ''');
+                  _syncNavByUrl(url?.toString());
+                  _pageReady = true;
+                },
+              ),
+
+              // 설정 화면(임베드 모드) — 하단 네비 유지
+              SettingsScreen(
+                onClearWebData: () async {
+                  try {
+                    await controller?.clearCache();
+                    await CookieManager.instance().deleteAllCookies();
+                    await WebStorageManager.instance().deleteAllData();
+                  } catch (_) {}
+                },
+                // 임베드 모드로 사용 (단독 화면으로 쓰고 싶으면 useScaffold: true)
+                useScaffold: false,
+              ),
+            ],
           ),
         ),
-        floatingActionButton: (_onMyPage && _tabActive)
-            ? Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
-                      blurRadius: 10,
-                      offset: const Offset(0, 0),
-                    ),
-                  ],
-                ),
-                child: FloatingActionButton(
-                  backgroundColor: const Color(0xFFFFFFFF), // 버튼 배경 흰색
-                  shape: const CircleBorder(),
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => SettingsScreen(
-                          onClearWebData: () async {
-                            try {
-                              await controller?.clearCache();
-                              await CookieManager.instance().deleteAllCookies();
-                              await WebStorageManager.instance().deleteAllData();
-                            } catch (_) {}
-                          },
-                        ),
-                      ),
-                    );
-                  },
-                  child: const Icon(
-                    Icons.settings,
-                    color: Color(0xFF005504), // 아이콘 색상
-                  ),
-                ),
-              )
-            : null,
         bottomNavigationBar: Theme(
           data: Theme.of(context).copyWith(
             navigationBarTheme: _tabActive ? baseTheme : disabledTheme,
           ),
           child: NavigationBar(
             selectedIndex: _currentIndex,
-            onDestinationSelected: (i) { if (_pageReady) _goTab(i); },
+            onDestinationSelected: (i) async {
+              // 설정 탭은 URL 로드 없이 화면 전환만
+              if (i == 4) {
+                setState(() => _currentIndex = 4);
+                return;
+              }
+
+              if (!_pageReady) return; // 초기 로딩 보호
+              await _goTab(i);
+            },
             labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
             destinations: const [
-              NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: '홈'),
               NavigationDestination(icon: Icon(Icons.search), label: '검색'),
               NavigationDestination(icon: Icon(Icons.shopping_bag_outlined), selectedIcon: Icon(Icons.shopping_bag), label: '장바구니'),
+              NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: '홈'),
               NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: '마이페이지'),
+              NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: '설정'),
             ],
           ),
         ),

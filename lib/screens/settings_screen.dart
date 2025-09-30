@@ -5,7 +5,7 @@ class SettingsScreen extends StatelessWidget {
 
   const SettingsScreen({
     super.key,
-    required this.onClearWebData,
+    required this.onClearWebData, required bool useScaffold,
   });
 
   @override
