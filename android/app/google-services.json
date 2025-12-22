@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "25234262896",
+    "project_id": "directfarm-700b5",
+    "storage_bucket": "directfarm-700b5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:25234262896:android:fe03c4036efcb0cd3d5db5",
+        "android_client_info": {
+          "package_name": "com.directfarm.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDfSPnlFu3CFNCzA-0ce48WIpNfG7nl2mM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:25234262896:android:66cb2c0a6d4904bc3d5db5",
+        "android_client_info": {
+          "package_name": "com.example.directfarm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDfSPnlFu3CFNCzA-0ce48WIpNfG7nl2mM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
