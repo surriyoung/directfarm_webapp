@@ -302,7 +302,7 @@ class _WebViewAppState extends State<WebViewApp> {
                 onPressed: () async {
                   // 임시 href '#'
                   await controller?.evaluateJavascript(
-                    source: r"try{location.href='#';}catch(e){}",
+                    source: r"try{location.href='https://pf.kakao.com/_QXQyn/chat';}catch(e){}",
                   );
                 },
                 child: ClipOval(
