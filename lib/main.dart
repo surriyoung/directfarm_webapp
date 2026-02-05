@@ -1,9 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-
+import 'package:url_launcher/url_launcher.dart';
 import 'theme/app_theme.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -18,6 +20,7 @@ Future<void> main() async {
 
   runApp(
     MaterialApp(
+      debugShowCheckedModeBanner: false,
       theme: buildDirectFarmTheme(),
       supportedLocales: const [Locale('ko', 'KR')],
       localizationsDelegates: const [
@@ -37,7 +40,57 @@ class WebViewApp extends StatefulWidget {
 }
 
 class _WebViewAppState extends State<WebViewApp> {
+  String _currentUrl = 'https://directfarm.co.kr/';
   InAppWebViewController? controller;
+
+    bool _isSocialLoginEntry(Uri uri) {
+    // directfarm 내부 카카오/네이버 진입
+    final qp = uri.queryParameters;
+    final isDirectfarm = uri.host == 'directfarm.co.kr';
+    final provider = (qp['provider'] ?? '').toLowerCase();
+
+    if (isDirectfarm && (provider == 'kakao' || provider == 'naver')) {
+      return true;
+    }
+
+    // 실제 OAuth 도메인
+    final host = uri.host.toLowerCase();
+    if (host.contains('kauth.kakao.com')) return true;
+    if (host.contains('accounts.kakao.com')) return true;
+    if (host.contains('nid.naver.com')) return true;
+
+    return false;
+  }
+
+  Future<void> _openExternal(Uri uri) async {
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) {
+        debugPrint('❌ launchUrl returned false: $uri');
+      }
+    } catch (e) {
+      debugPrint('❌ external open failed: $uri / $e');
+
+      // ✅ 카카오톡 스킴인데 앱이 없으면: 웹 로그인으로 우회(또는 스토어 이동)
+      if (Platform.isAndroid && uri.scheme.toLowerCase() == 'kakaotalk') {
+        // 1) 카카오 웹 로그인으로 fallback (가장 무난)
+        final fallback = uri.queryParameters['url'];
+        if (fallback != null && fallback.isNotEmpty) {
+          await controller?.loadUrl(
+            urlRequest: URLRequest(url: WebUri(Uri.decodeComponent(fallback))),
+          );
+          return;
+        }
+
+        // 2) 또는 Play Store로 유도하고 싶으면(선택)
+        // await launchUrl(
+        //   Uri.parse('market://details?id=com.kakao.talk'),
+        //   mode: LaunchMode.externalApplication,
+        // );
+      }
+    }
+  }
+
 
   // ✅ 탭 순서: 홈(0) · 검색(1) · AI추천(2) · 장바구니(3) · 마이페이지(4)
   int _currentIndex = 0;
@@ -170,6 +223,15 @@ class _WebViewAppState extends State<WebViewApp> {
 
   @override
   Widget build(BuildContext context) {
+    bool _isMyPageUrl(String url) {
+      try {
+        final u = Uri.parse(url);
+        return u.host == 'directfarm.co.kr' && u.path == '/shop/mypage.php';
+      } catch (_) {
+        return false;
+      }
+    }
+    final bool showSettingsFab = _isMyPageUrl(_currentUrl);
     final baseTheme = Theme.of(context).navigationBarTheme;
     final disabledTheme = baseTheme.copyWith(
       indicatorColor: Colors.transparent,
@@ -185,7 +247,7 @@ class _WebViewAppState extends State<WebViewApp> {
       onWillPop: _onWillPop,
       child: Scaffold(
         body: SafeArea(
-          bottom: false,
+          bottom: true,
           child: IndexedStack(
             index: _inSettings ? 1 : 0,
             children: [
@@ -195,23 +257,180 @@ class _WebViewAppState extends State<WebViewApp> {
                       '❌ onReceivedError url=${req.url} type=${err.type} desc=${err.description}');
                 },
                 onReceivedHttpError: (ctrl, req, res) {
-                  debugPrint(
-                      '⚠️ onReceivedHttpError url=${req.url} status=${res.statusCode}');
+                  debugPrint('⚠️ onReceivedHttpError url=${req.url} status=${res.statusCode}');
                 },
+
                 initialUrlRequest: URLRequest(url: WebUri(_home)),
                 initialSettings: InAppWebViewSettings(
+                  limitsNavigationsToAppBoundDomains: true,
                   javaScriptEnabled: true,
                   transparentBackground: true,
                   mediaPlaybackRequiresUserGesture: false,
                   allowsInlineMediaPlayback: true,
+
+                  useShouldOverrideUrlLoading: true,
+                  supportMultipleWindows: true,
+                  javaScriptCanOpenWindowsAutomatically: true,
+
+                  // ✅ UA 고정 (모바일 크롬/사파리처럼 보이게)
+                  userAgent: Platform.isIOS
+                      ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                      : 'Mozilla/5.0 (Linux; Android 13; SM-G991N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+
+                  // ✅ iOS 쿠키/세션 유지에 도움
+                  sharedCookiesEnabled: true,
+
+                  // ✅ (플러그인 버전에 따라 없을 수 있음: 빨간줄 뜨면 이 줄만 삭제)
+                  thirdPartyCookiesEnabled: true,
                 ),
+
+                shouldOverrideUrlLoading: (webCtrl, action) async {
+                  final webUri = action.request.url;
+                  final raw = webUri?.toString() ?? '';
+
+                  // ✅ 로그로 실제로 어떤 URL/스킴이 들어오는지 확인
+                  debugPrint('➡️ shouldOverrideUrlLoading: $raw');
+
+                  if (raw.isEmpty) return NavigationActionPolicy.ALLOW;
+
+                  late final Uri uri;
+                  try {
+                    uri = Uri.parse(raw);
+                  } catch (e) {
+                    debugPrint('❌ Uri.parse failed: $raw / $e');
+                    return NavigationActionPolicy.ALLOW;
+                  }
+
+                  final scheme = uri.scheme.toLowerCase();
+                  final isHttp = scheme == 'http' || scheme == 'https';
+
+                  // ✅ 요구사항: kakaokompassauth://, intent:// 나오면 외부 앱으로
+                  final shouldExternal =
+                      scheme == 'kakaokompassauth' ||
+                      scheme == 'intent' ||
+                      scheme == 'market' ||
+                      scheme == 'itms-apps' ||
+                      scheme == 'tel' ||
+                      scheme == 'sms' ||
+                      scheme == 'mailto' ||
+
+                      // ✅ 카카오 계열 스킴 추가(실제 환경에서 자주 나옴)
+                      scheme.startsWith('kakao') ||
+                      scheme == 'kakaotalk' ||
+                      scheme == 'kakaolink';
+
+                  if (shouldExternal) {
+                    debugPrint('🚀 external scheme: $scheme -> $raw');
+                    await _openExternal(uri);
+                    return NavigationActionPolicy.CANCEL;
+                  }
+
+                  // ✅ http/https는 웹뷰 내부 유지 (카카오 로그인 웹 플로우 유지)
+                  if (isHttp) return NavigationActionPolicy.ALLOW;
+
+                  // ✅ 그 외 커스텀 스킴도 외부 시도
+                  debugPrint('🚀 external custom scheme: $scheme -> $raw');
+                  await _openExternal(uri);
+                  return NavigationActionPolicy.CANCEL;
+                },
+
+                onCreateWindow: (webCtrl, createWindowRequest) async {
+                  final w = createWindowRequest.request.url;
+                  final raw = w?.toString() ?? '';
+
+                  debugPrint('🪟 onCreateWindow: $raw (null이면 JS window.open 케이스일 수 있음)');
+
+                  // ✅ request.url이 null이면 여기서 뭘 할 수가 없음
+                  // → 아래 3)에서 window.open을 location.href로 바꾸는 JS를 주입해서 해결
+                  if (raw.isEmpty) return false;
+
+                  late final Uri uri;
+                  try {
+                    uri = Uri.parse(raw);
+                  } catch (_) {
+                    return false;
+                  }
+
+                  final scheme = uri.scheme.toLowerCase();
+                  final isHttp = scheme == 'http' || scheme == 'https';
+
+                  final shouldExternal =
+                      scheme == 'kakaokompassauth' ||
+                      scheme == 'intent' ||
+                      scheme == 'market' ||
+                      scheme == 'itms-apps' ||
+                      scheme == 'tel' ||
+                      scheme == 'sms' ||
+                      scheme == 'mailto' ||
+
+                      // ✅ 카카오 계열 스킴 추가(실제 환경에서 자주 나옴)
+                      scheme.startsWith('kakao') ||
+                      scheme == 'kakaotalk' ||
+                      scheme == 'kakaolink';
+
+                  if (shouldExternal) {
+                    await _openExternal(uri);
+                    return false;
+                  }
+
+                  if (isHttp) {
+                    await webCtrl.loadUrl(urlRequest: URLRequest(url: w));
+                    return true;
+                  }
+
+                  await _openExternal(uri);
+                  return false;
+                },
+
                 onWebViewCreated: (ctrl) async {
                   controller = ctrl;
+
+                  // ✅ Android 3rd-party cookies 허용 (버전별 API 차이 안전 처리)
+                  if (Platform.isAndroid) {
+                    try {
+                      final cm = CookieManager.instance();
+                      await (cm as dynamic).setAcceptThirdPartyCookies(
+                        controller: ctrl,
+                        acceptThirdPartyCookies: true,
+                      );
+                    } catch (e) {
+                      debugPrint('⚠️ setAcceptThirdPartyCookies not available: $e');
+                    }
+                  }
                 },
-                onLoadStart: (ctrl, url) => _syncNavByUrl(url?.toString()),
-                onUpdateVisitedHistory: (ctrl, url, _) =>
-                    _syncNavByUrl(url?.toString()),
+
+                onLoadStart: (ctrl, url) {
+                  final u = url?.toString() ?? _home;
+                  setState(() => _currentUrl = u);
+                  _syncNavByUrl(u);
+                },
+                onUpdateVisitedHistory: (ctrl, url, _) {
+                  final u = url?.toString() ?? _home;
+                  setState(() => _currentUrl = u);
+                  _syncNavByUrl(u);
+                },
+
                 onLoadStop: (ctrl, url) async {
+                  final u = url?.toString() ?? _home;
+                  if (mounted) setState(() => _currentUrl = u);
+
+                  await ctrl.evaluateJavascript(source: r'''
+                    (function () {
+                      try {
+                        // ✅ window.open을 가로채서 팝업 대신 현재 창 이동으로 처리
+                        if (!window._df_open_patched) {
+                          window._df_open_patched = true;
+                          const _open = window.open;
+                          window.open = function(url, name, specs) {
+                            try {
+                              if (url) location.href = url;
+                            } catch(e) {}
+                            return null;
+                          };
+                        }
+                      } catch(e) {}
+                    })();
+                  ''');
                   // footer 숨김 + bottom-nav 제거 + kakao-btn-wrap 제거(동적 생성 대비)
                   await ctrl.evaluateJavascript(source: r'''
                     (function(){
@@ -221,7 +440,6 @@ class _WebViewAppState extends State<WebViewApp> {
 
                         function kill(){
                           try{
-                            document.querySelectorAll('.bottom-nav').forEach(el => el.remove());
                             document.querySelectorAll('.kakao-btn-wrap').forEach(el => el.remove());
                           }catch(e){}
                         }
@@ -266,11 +484,10 @@ class _WebViewAppState extends State<WebViewApp> {
                     })();
                   ''');
 
-                  _syncNavByUrl(url?.toString());
+                  _syncNavByUrl(u);
                   _pageReady = true;
                 },
               ),
-
               SettingsScreen(
                 onClearWebData: () async {
                   try {
@@ -279,6 +496,7 @@ class _WebViewAppState extends State<WebViewApp> {
                     await WebStorageManager.instance().deleteAllData();
                   } catch (_) {}
                 },
+                onBack: () => setState(() => _inSettings = false),
                 useScaffold: false,
               ),
             ],
@@ -286,93 +504,95 @@ class _WebViewAppState extends State<WebViewApp> {
         ),
 
         // ✅ 플로팅 버튼 2개(원형)
-        floatingActionButton: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            // 카카오톡 버튼 (SVG 원형)
-            SizedBox(
-              width: size,
-              height: size,
-              child: FloatingActionButton(
-                heroTag: 'kakao_fab',
-                shape: const CircleBorder(),
-                backgroundColor: Colors.transparent,
-                elevation: 6,
-                onPressed: () async {
-                  // 임시 href '#'
-                  await controller?.evaluateJavascript(
-                    source: r"try{location.href='https://pf.kakao.com/_QXQyn/chat';}catch(e){}",
-                  );
-                },
-                child: ClipOval(
-                  child: SvgPicture.string(
-                    _kakaoSvg(size),
-                    width: size,
-                    height: size,
-                    fit: BoxFit.cover,
+        floatingActionButton: Padding(
+          padding: const EdgeInsets.only(bottom: 50), // ← 여기 숫자로 조절
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // 카카오톡 버튼
+              SizedBox(
+                width: size,
+                height: size,
+                child: FloatingActionButton(
+                  heroTag: 'kakao_fab',
+                  shape: const CircleBorder(),
+                  backgroundColor: Colors.transparent,
+                  elevation: 6,
+                  onPressed: () async {
+                    await controller?.evaluateJavascript(
+                      source: r"try{location.href='https://pf.kakao.com/_QXQyn/chat';}catch(e){}",
+                    );
+                  },
+                  child: ClipOval(
+                    child: SvgPicture.string(
+                      _kakaoSvg(size),
+                      width: size,
+                      height: size,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 ),
               ),
-            ),
-
-            const SizedBox(height: 10),
-
-            // 설정 버튼
-            SizedBox(
-              width: size,
-              height: size,
-              child: FloatingActionButton(
-                heroTag: 'settings_fab',
-                shape: const CircleBorder(),
-                onPressed: () => setState(() => _inSettings = true),
-                child: Icon(Icons.settings, size: size * 0.5),
-              ),
-            ),
-          ],
+              // 설정 버튼
+              if (showSettingsFab) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: size,
+                  height: size,
+                  child: FloatingActionButton(
+                    heroTag: 'settings_fab',
+                    shape: const CircleBorder(),
+                    onPressed: () => setState(() => _inSettings = true),
+                    child: Icon(Icons.settings, size: size * 0.5),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
         floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
 
         // ✅ 하단 네비: 홈 검색 AI추천 장바구니 마이페이지
-        bottomNavigationBar: Theme(
-          data: Theme.of(context).copyWith(
-            navigationBarTheme: _tabActive ? baseTheme : disabledTheme,
-          ),
-          child: NavigationBar(
-            selectedIndex: _currentIndex,
-            onDestinationSelected: (i) async {
-              if (!_pageReady) return;
-              await _goTab(i);
-            },
-            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.home_outlined),
-                selectedIcon: Icon(Icons.home),
-                label: '홈',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.search),
-                label: '검색',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.auto_awesome_outlined),
-                selectedIcon: Icon(Icons.auto_awesome),
-                label: 'AI추천',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.shopping_bag_outlined),
-                selectedIcon: Icon(Icons.shopping_bag),
-                label: '장바구니',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.person_outline),
-                selectedIcon: Icon(Icons.person),
-                label: '마이페이지',
-              ),
-            ],
-          ),
-        ),
+        // bottomNavigationBar: Theme(
+        //   data: Theme.of(context).copyWith(
+        //     navigationBarTheme: _tabActive ? baseTheme : disabledTheme,
+        //   ),
+        //   child: NavigationBar(
+        //     selectedIndex: _currentIndex,
+        //     onDestinationSelected: (i) async {
+        //       if (!_pageReady) return;
+        //       await _goTab(i);
+        //     },
+        //     labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        //     destinations: const [
+        //       NavigationDestination(
+        //         icon: Icon(Icons.home_outlined),
+        //         selectedIcon: Icon(Icons.home),
+        //         label: '홈',
+        //       ),
+        //       NavigationDestination(
+        //         icon: Icon(Icons.search),
+        //         label: '검색',
+        //       ),
+        //       NavigationDestination(
+        //         icon: Icon(Icons.auto_awesome_outlined),
+        //         selectedIcon: Icon(Icons.auto_awesome),
+        //         label: 'AI추천',
+        //       ),
+        //       NavigationDestination(
+        //         icon: Icon(Icons.shopping_bag_outlined),
+        //         selectedIcon: Icon(Icons.shopping_bag),
+        //         label: '장바구니',
+        //       ),
+        //       NavigationDestination(
+        //         icon: Icon(Icons.person_outline),
+        //         selectedIcon: Icon(Icons.person),
+        //         label: '마이페이지',
+        //       ),
+        //     ],
+        //   ),
+        // ),
       ),
     );
   }

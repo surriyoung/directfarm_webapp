@@ -3,10 +3,12 @@ import 'package:url_launcher/url_launcher.dart';
 
 class SettingsScreen extends StatelessWidget {
   final Future<void> Function() onClearWebData;
+  final VoidCallback onBack; // ✅ 추가
 
   const SettingsScreen({
     super.key,
     required this.onClearWebData,
+    required this.onBack,
     required bool useScaffold, // 기존 파라미터 유지
   });
 
@@ -31,6 +33,13 @@ class SettingsScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('설정'),
+        titleSpacing: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.chevron_left),
+          onPressed: onBack, // ✅ Navigator.pop 대신
+          iconSize: 34,
+          splashRadius: 22,
+        ),
       ),
       body: ListView(
         children: [
