@@ -11,11 +11,16 @@
         <string>naversearchthirdlogin</string>
     </array>
 
-    <key>WKAppBoundDomains</key>
-    <array>
-        <string>directfarm.co.kr</string>
-        <string>appleid.apple.com</string>
-    </array>
+<key>WKAppBoundDomains</key>
+<array>
+    <string>directfarm.co.kr</string>
+    <string>appleid.apple.com</string>
+    <string>kauth.kakao.com</string>
+    <string>accounts.kakao.com</string>
+    <string>kakaocorp.com</string>
+    <string>nid.naver.com</string>
+    <string>naver.com</string>
+</array>
 
     <key>NSAppTransportSecurity</key>
     <dict>
